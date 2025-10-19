@@ -1,0 +1,282 @@
+// Main Experience Controller for Luminescence
+
+let piano;
+let audioManager;
+let particleSystem;
+let thoughts = [];
+let journal;
+
+// State
+let state = {
+    lightLevel: 0,
+    noteCount: 0,
+    thoughtCount: 0,
+    transformedCount: 0,
+    releasedCount: 0,
+    lastNoteTime: 0,
+    waitingForThought: false,
+    breathingThought: null,
+    breathingStartTime: 0
+};
+
+// Prompts
+const prompts = {
+    firstThought: "what weighs on you?",
+    accumulation: "they gather, don't they?",
+    firstRelease: "one at a time",
+    clearing: "the light returns",
+    manyThoughts: "the darkness grows",
+    firstTransform: "it changes...",
+    revelation: "you are creating beauty from darkness"
+};
+
+function setup() {
+    createCanvas(windowWidth, windowHeight);
+    
+    // Initialize systems
+    piano = new Piano(window);
+    audioManager = new AudioManager(window);
+    particleSystem = new ParticleSystem();
+    journal = new Journal();
+    
+    // Setup thought input
+    setupThoughtInput();
+    
+    // Initial prompt
+    setTimeout(() => {
+        showPrompt("listen. create.", 3000);
+    }, 500);
+}
+
+function draw() {
+    // Background color evolution
+    const bgColor = lerpColor(
+        color(0, 0, 0),
+        color(30, 40, 80),
+        state.lightLevel
+    );
+    background(bgColor);
+    
+    // Update and draw particles
+    particleSystem.update();
+    particleSystem.draw(window);
+    
+    // Update and draw thoughts
+    const ripples = particleSystem.getRipples();
+    for (let i = thoughts.length - 1; i >= 0; i--) {
+        const thought = thoughts[i];
+        thought.update(ripples, particleSystem);
+        thought.draw();
+        
+        // Remove released thoughts
+        if (thought.isReleased()) {
+            journal.addTimelineEntry('thought-released', thought.text);
+            state.releasedCount++;
+            updateLightLevel();
+            thoughts.splice(i, 1);
+            
+            audioManager.playReleaseSound();
+            
+            if (state.releasedCount === 1) {
+                setTimeout(() => showPrompt(prompts.firstRelease, 3000), 500);
+            }
+        }
+        
+        // Track transformations
+        if (thought.isTransformed() && !thought.wasTransformed) {
+            thought.wasTransformed = true;
+            journal.addTimelineEntry('thought-transformed', thought.text);
+            state.transformedCount++;
+            updateLightLevel();
+            
+            audioManager.playTransformSound();
+            
+            if (state.transformedCount === 1) {
+                setTimeout(() => showPrompt(prompts.firstTransform, 3000), 500);
+            }
+        }
+    }
+    
+    // Draw piano
+    piano.draw();
+    
+    // Update ambient sound
+    audioManager.updateAmbient(state.lightLevel);
+    
+    // Update breathing visualization
+    updateBreathingVisualization();
+    
+    // Check for revelation
+    if (state.lightLevel > 0.7 && state.transformedCount + state.releasedCount > 8) {
+        if (!state.revelationShown) {
+            state.revelationShown = true;
+            setTimeout(() => showPrompt(prompts.revelation, 5000), 1000);
+        }
+    }
+}
+
+function mousePressed() {
+    // Check if clicking on thought
+    let clickedThought = false;
+    for (let thought of thoughts) {
+        if (thought.isHovered(mouseX, mouseY)) {
+            startBreathingRelease(thought);
+            clickedThought = true;
+            break;
+        }
+    }
+    
+    if (clickedThought) return;
+    
+    // Check if clicking piano
+    const key = piano.handlePress(mouseX, mouseY, audioManager, particleSystem);
+    if (key) {
+        state.noteCount++;
+        state.lastNoteTime = Date.now();
+        
+        // Check if should prompt for thought
+        if (state.noteCount >= 10 && !state.waitingForThought && thoughts.length < 15) {
+            if (Date.now() - state.lastNoteTime > 2000 || state.noteCount % 15 === 0) {
+                promptForThought();
+            }
+        }
+        
+        // Show accumulation message
+        if (thoughts.length === 5 && state.thoughtCount === 5) {
+            setTimeout(() => showPrompt(prompts.accumulation, 3000), 500);
+        }
+        
+        if (thoughts.length > 8) {
+            if (!state.manyThoughtsShown) {
+                state.manyThoughtsShown = true;
+                showPrompt(prompts.manyThoughts, 3000);
+            }
+        }
+    }
+}
+
+function mouseReleased() {
+    piano.releaseAll();
+    
+    // Stop breathing release
+    if (state.breathingThought) {
+        const holdDuration = Date.now() - state.breathingStartTime;
+        if (holdDuration >= 6000) {
+            state.breathingThought.startRelease();
+        }
+        state.breathingThought = null;
+        hideBreathingVisualization();
+    }
+}
+
+function setupThoughtInput() {
+    const container = document.getElementById('thought-input-container');
+    const input = document.getElementById('thought-input');
+    
+    input.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter' && input.value.trim()) {
+            createThought(input.value.trim());
+            input.value = '';
+            container.classList.remove('show');
+            state.waitingForThought = false;
+        }
+    });
+}
+
+function promptForThought() {
+    state.waitingForThought = true;
+    const container = document.getElementById('thought-input-container');
+    const input = document.getElementById('thought-input');
+    
+    showPrompt(prompts.firstThought, 2000);
+    
+    setTimeout(() => {
+        container.classList.add('show');
+        input.focus();
+    }, 2000);
+}
+
+function createThought(text) {
+    const x = random(width * 0.2, width * 0.8);
+    const y = random(100, height - 350);
+    
+    const thought = new Thought(text, x, y, window);
+    thoughts.push(thought);
+    
+    state.thoughtCount++;
+    journal.addTimelineEntry('thought-created', text);
+    
+    // Emit particles around new thought
+    const [r, g, b] = hslToRgb(thought.baseColor.h, thought.baseColor.s, thought.baseColor.l);
+    particleSystem.emit(x, y, 20, {
+        color: [r, g, b],
+        speedMin: -2,
+        speedMax: 2,
+        lifetime: 40,
+        size: 3
+    });
+}
+
+function startBreathingRelease(thought) {
+    state.breathingThought = thought;
+    state.breathingStartTime = Date.now();
+    showBreathingVisualization();
+}
+
+function showBreathingVisualization() {
+    const container = document.querySelector('.breath-container');
+    const circle = document.querySelector('.breath-circle');
+    
+    container.classList.add('show');
+    
+    // Breathing cycle (3 seconds in, 3 seconds out)
+    function breathe() {
+        if (!state.breathingThought) {
+            container.classList.remove('show');
+            return;
+        }
+        
+        circle.classList.remove('exhale');
+        circle.classList.add('inhale');
+        audioManager.playBreathBell();
+        
+        setTimeout(() => {
+            if (state.breathingThought) {
+                circle.classList.remove('inhale');
+                circle.classList.add('exhale');
+                audioManager.playBreathBell();
+                setTimeout(breathe, 3000);
+            }
+        }, 3000);
+    }
+    
+    breathe();
+}
+
+function hideBreathingVisualization() {
+    const container = document.querySelector('.breath-container');
+    container.classList.remove('show');
+}
+
+function updateBreathingVisualization() {
+    if (state.breathingThought) {
+        const duration = Date.now() - state.breathingStartTime;
+        if (duration >= 6000) {
+            // Visual feedback that release is ready
+            const container = document.querySelector('.breath-text');
+            if (container) {
+                container.textContent = 'release';
+            }
+        }
+    }
+}
+
+function updateLightLevel() {
+    const totalProcessed = state.transformedCount + state.releasedCount;
+    state.lightLevel = Math.min(1, totalProcessed * 0.08);
+}
+
+function windowResized() {
+    resizeCanvas(windowWidth, windowHeight);
+    piano = new Piano(window);
+}
